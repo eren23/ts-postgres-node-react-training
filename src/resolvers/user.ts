@@ -1,4 +1,4 @@
-import { Resolver, Mutation, Field, InputType, Arg, Ctx, ObjectType } from "type-graphql";
+import { Resolver, Mutation, Field, InputType, Arg, Ctx, ObjectType, Query } from "type-graphql";
 import { MyContext } from "src/types";
 import { User } from "../entities/User";
 import argon2 from "argon2"
@@ -30,15 +30,68 @@ class UserResponse {
 
 @Resolver()
 export class UserResolver {
-    @Mutation(() => User)
+    @Query(() => User, { nullable: true })
+    async me(
+        @Ctx() Ctx: MyContext
+    ) {
+        //You are not logged in
+        if (!Ctx.req.session!.userID) {
+            return null
+        }
+
+        const user = await Ctx.em.findOne(User, { id: Ctx.req.session!.userID })
+        return user
+
+    }
+
+    @Mutation(() => UserResponse)
     async register(
         @Arg("options") options: UsernamePasswordInput,
         @Ctx() Ctx: MyContext
-    ) {
+    ): Promise<UserResponse> {
+        if (options.username.length <= 2) {
+            return {
+                errors: [
+                    {
+                        field: " username",
+                        message: "username must be longer than 2"
+                    }
+                ]
+            }
+        }
+
+        if (options.password.length <= 2) {
+            return {
+                errors: [
+                    {
+                        field: " password",
+                        message: "password must be longer than 2"
+                    }
+                ]
+            }
+        }
         const hashedPassword = await argon2.hash(options.password)
         const user = Ctx.em.create(User, { username: options.username, password: hashedPassword })
-        await Ctx.em.persistAndFlush(user)
-        return user;
+        try {
+            await Ctx.em.persistAndFlush(user)
+        } catch (err) {
+            if (err.code === "23505") { // || err.details.includes("already exists")){
+                return {
+                    errors: [
+                        {
+                            field: " username",
+                            message: "the username is already exist"
+                        }]
+                }
+            }
+
+
+            console.log("message:", err.message);
+
+        }
+
+        Ctx.req.session!.userID = user.id
+        return { user };
     }
 
     @Mutation(() => UserResponse)
@@ -59,6 +112,8 @@ export class UserResolver {
                 errors: [{ field: "password", message: "password's are not matching" }]
             }
         }
+        Ctx.req.session!.userID = user.id
+
         return { user, };
     }
 }

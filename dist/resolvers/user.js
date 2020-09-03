@@ -68,12 +68,57 @@ UserResponse = __decorate([
     type_graphql_1.ObjectType()
 ], UserResponse);
 let UserResolver = class UserResolver {
+    me(Ctx) {
+        return __awaiter(this, void 0, void 0, function* () {
+            if (!Ctx.req.session.userID) {
+                return null;
+            }
+            const user = yield Ctx.em.findOne(User_1.User, { id: Ctx.req.session.userID });
+            return user;
+        });
+    }
     register(options, Ctx) {
         return __awaiter(this, void 0, void 0, function* () {
+            if (options.username.length <= 2) {
+                return {
+                    errors: [
+                        {
+                            field: " username",
+                            message: "username must be longer than 2"
+                        }
+                    ]
+                };
+            }
+            if (options.password.length <= 2) {
+                return {
+                    errors: [
+                        {
+                            field: " password",
+                            message: "password must be longer than 2"
+                        }
+                    ]
+                };
+            }
             const hashedPassword = yield argon2_1.default.hash(options.password);
             const user = Ctx.em.create(User_1.User, { username: options.username, password: hashedPassword });
-            yield Ctx.em.persistAndFlush(user);
-            return user;
+            try {
+                yield Ctx.em.persistAndFlush(user);
+            }
+            catch (err) {
+                if (err.code === "23505") {
+                    return {
+                        errors: [
+                            {
+                                field: " username",
+                                message: "the username is already exist"
+                            }
+                        ]
+                    };
+                }
+                console.log("message:", err.message);
+            }
+            Ctx.req.session.userID = user.id;
+            return { user };
         });
     }
     login(options, Ctx) {
@@ -90,12 +135,20 @@ let UserResolver = class UserResolver {
                     errors: [{ field: "password", message: "password's are not matching" }]
                 };
             }
+            Ctx.req.session.userID = user.id;
             return { user, };
         });
     }
 };
 __decorate([
-    type_graphql_1.Mutation(() => User_1.User),
+    type_graphql_1.Query(() => User_1.User, { nullable: true }),
+    __param(0, type_graphql_1.Ctx()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], UserResolver.prototype, "me", null);
+__decorate([
+    type_graphql_1.Mutation(() => UserResponse),
     __param(0, type_graphql_1.Arg("options")),
     __param(1, type_graphql_1.Ctx()),
     __metadata("design:type", Function),
