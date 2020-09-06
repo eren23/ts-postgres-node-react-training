@@ -1,145 +1,161 @@
-import { Resolver, Mutation, Field, InputType, Arg, Ctx, ObjectType, Query } from "type-graphql";
-import { MyContext } from "src/types";
-import { User } from "../entities/User";
-import argon2 from "argon2"
-import { EntityManager } from "@mikro-orm/postgresql"
-import { COOKIE_NAME } from "../constants";
 
-@InputType()
-class UsernamePasswordInput {
-    @Field()
-    username: string
-    @Field()
-    password: string
-}
+import {
+    Resolver,
+    Mutation,
+    Arg,
+    Field,
+    Ctx,
+    ObjectType,
+    Query,
+} from "type-graphql";
+import { MyContext } from "../types";
+import { User } from "../entities/User";
+import argon2 from "argon2";
+import { EntityManager } from "@mikro-orm/postgresql";
+import { COOKIE_NAME } from "../constants";
+import { UsernamePasswordInput } from "./UsernamePasswordInput";
+import { validateRegister } from "../utils/validateRegister";
 
 @ObjectType()
 class FieldError {
     @Field()
-    field: string
+    field: string;
     @Field()
-    message: string
+    message: string;
 }
 
 @ObjectType()
 class UserResponse {
     @Field(() => [FieldError], { nullable: true })
-    errors?: FieldError[]
+    errors?: FieldError[];
 
     @Field(() => User, { nullable: true })
-    user?: User
+    user?: User;
 }
 
 @Resolver()
 export class UserResolver {
+    @Mutation(() => Boolean)
+    async forgotPassword(@Arg("email") email: string, @Ctx() { em }: MyContext) {
+        // const user = await em.findOne(User, { email });
+        console.log(email, em);
+
+        return true;
+    }
+
     @Query(() => User, { nullable: true })
-    async me(
-        @Ctx() Ctx: MyContext
-    ) {
-        //You are not logged in
-        if (!Ctx.req.session!.userID) {
-            return null
+    async me(@Ctx() { req, em }: MyContext) {
+        // you are not logged in
+        if (!req.session!.userId) {
+            return null;
         }
 
-        const user = await Ctx.em.findOne(User, { id: Ctx.req.session!.userID })
-        return user
-
+        const user = await em.findOne(User, { id: req.session!.userId });
+        return user;
     }
 
     @Mutation(() => UserResponse)
     async register(
         @Arg("options") options: UsernamePasswordInput,
-        @Ctx() Ctx: MyContext
+        @Ctx() { em, req }: MyContext
     ): Promise<UserResponse> {
-        if (options.username.length <= 2) {
-            return {
-                errors: [
-                    {
-                        field: "username",
-                        message: "username must be longer than 2"
-                    }
-                ]
-            }
+        const errors = validateRegister(options);
+        if (errors) {
+            return { errors };
         }
 
-        if (options.password.length <= 2) {
-            return {
-                errors: [
-                    {
-                        field: "password",
-                        message: "password must be longer than 2"
-                    }
-                ]
-            }
-        }
-        const hashedPassword = await argon2.hash(options.password)
-
+        const hashedPassword = await argon2.hash(options.password);
         let user;
         try {
-            const result = await (Ctx.em as EntityManager).createQueryBuilder(User).getKnexQuery().insert(
-                {
+            const result = await (em as EntityManager)
+                .createQueryBuilder(User)
+                .getKnexQuery()
+                .insert({
                     username: options.username,
+                    email: options.email,
                     password: hashedPassword,
                     created_at: new Date(),
-                    updated_at: new Date()
-                }
-            ).returning("*");
-            user = result[0]
+                    updated_at: new Date(),
+                })
+                .returning("*");
+            user = result[0];
         } catch (err) {
-            if (err.code === "23505") { // || err.details.includes("already exists")){
-
+            //|| err.detail.includes("already exists")) {
+            // duplicate username error
+            if (err.code === "23505") {
                 return {
                     errors: [
                         {
                             field: "username",
-                            message: "the username is already exist"
-                        }]
-                }
+                            message: "username already taken",
+                        },
+                    ],
+                };
             }
-
-
-            console.log("message:", err.message);
-
         }
 
-        Ctx.req.session!.userID = user.id
+        // store user id session
+        // this will set a cookie on the user
+        // keep them logged in
+        req.session!.userId = user.id;
+
         return { user };
     }
 
     @Mutation(() => UserResponse)
     async login(
-        @Arg("options") options: UsernamePasswordInput,
-        @Ctx() Ctx: MyContext
+        @Arg("usernameOrEmail") usernameOrEmail: string,
+        @Arg("password") password: string,
+        @Ctx() { em, req }: MyContext
     ): Promise<UserResponse> {
-
-        const user = await Ctx.em.findOne(User, { username: options.username })
+        const user = await em.findOne(
+            User,
+            usernameOrEmail.includes("@")
+                ? { email: usernameOrEmail }
+                : { username: usernameOrEmail }
+        );
         if (!user) {
             return {
-                errors: [{ field: "username", message: "user doesn't exist" }]
-            }
+                errors: [
+                    {
+                        field: "usernameOrEmail",
+                        message: "that username doesn't exist",
+                    },
+                ],
+            };
         }
-        const valid = await argon2.verify(user.password, options.password)
+        const valid = await argon2.verify(user.password, password);
         if (!valid) {
             return {
-                errors: [{ field: "password", message: "password's are not matching" }]
-            }
+                errors: [
+                    {
+                        field: "password",
+                        message: "incorrect password",
+                    },
+                ],
+            };
         }
-        Ctx.req.session!.userID = user.id
 
-        return { user, };
+        req.session!.userId = user.id;
+
+        return {
+            user,
+        };
     }
 
     @Mutation(() => Boolean)
-    logout(
-        @Ctx() Ctx: MyContext
-    ) {
-        return new Promise(resolve => Ctx.req.session?.destroy(err => {
+    logout(@Ctx() { req, res }: MyContext) {
+        return new Promise((resolve) =>
+            req.session!.destroy((err) => {
+                res.clearCookie(COOKIE_NAME);
+                if (err) {
+                    console.log(err);
+                    resolve(false);
+                    return;
+                }
 
-            if (err) {
-                resolve(false)
-            }
-            Ctx.res.clearCookie(COOKIE_NAME)
-            resolve(true)
-        }))
+                resolve(true);
+            })
+        );
     }
 }
